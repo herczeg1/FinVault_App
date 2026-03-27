@@ -183,5 +183,86 @@ export async function registerRoutes(
     }
   });
 
+  // Savings Goals
+  app.get("/api/savings/goals", authenticateToken, async (req: any, res) => {
+    try {
+      const goals = await storage.getSavingsGoals(req.user.id);
+      res.json(goals);
+    } catch (err) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.post("/api/savings/goals", authenticateToken, async (req: any, res) => {
+    try {
+      const { name, targetAmount, deadline } = req.body;
+      if (!name || !targetAmount) {
+        return res.status(400).json({ message: "name and targetAmount are required" });
+      }
+      const goal = await storage.createSavingsGoal({
+        userId: req.user.id,
+        name,
+        targetAmount,
+        deadline: deadline ? new Date(deadline) : null,
+      });
+      res.status(201).json(goal);
+    } catch (err) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.put("/api/savings/goals/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const goal = await storage.getSavingsGoal(Number(req.params.id));
+      if (!goal) return res.status(404).json({ message: "Goal not found" });
+      if (goal.userId !== req.user.id) return res.status(403).json({ message: "Forbidden" });
+
+      const { name, targetAmount, deadline } = req.body;
+      const updated = await storage.updateSavingsGoal(goal.id, {
+        ...(name && { name }),
+        ...(targetAmount && { targetAmount }),
+        ...(deadline !== undefined && { deadline: deadline ? new Date(deadline) : null }),
+      });
+      res.json(updated);
+    } catch (err) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.delete("/api/savings/goals/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const goal = await storage.getSavingsGoal(Number(req.params.id));
+      if (!goal) return res.status(404).json({ message: "Goal not found" });
+      if (goal.userId !== req.user.id) return res.status(403).json({ message: "Forbidden" });
+
+      await storage.deleteSavingsGoal(goal.id);
+      res.status(200).json({ message: "Goal deleted" });
+    } catch (err) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.post("/api/savings/goals/:id/contributions", authenticateToken, async (req: any, res) => {
+    try {
+      const goal = await storage.getSavingsGoal(Number(req.params.id));
+      if (!goal) return res.status(404).json({ message: "Goal not found" });
+      if (goal.userId !== req.user.id) return res.status(403).json({ message: "Forbidden" });
+
+      const { amount, note } = req.body;
+      if (!amount || isNaN(Number(amount)) || Number(amount) <= 0) {
+        return res.status(400).json({ message: "Valid amount is required" });
+      }
+
+      const contribution = await storage.addContribution({
+        goalId: goal.id,
+        amount,
+        note: note || null,
+      });
+      res.status(201).json(contribution);
+    } catch (err) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
   return httpServer;
 }
