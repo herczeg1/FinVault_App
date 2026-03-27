@@ -20,6 +20,7 @@ export interface IStorage {
   getCategory(id: number): Promise<Category | undefined>;
 
   getTransactions(accountId: number): Promise<Transaction[]>;
+  getTransactionsWithCategories(accountId: number): Promise<any[]>;
   createTransaction(tx: Omit<Transaction, "id" | "date">): Promise<Transaction>;
 
   getBudgets(userId: number): Promise<Budget[]>;
@@ -82,6 +83,23 @@ export class DatabaseStorage implements IStorage {
 
   async getTransactions(accountId: number): Promise<Transaction[]> {
     return await db.select().from(transactions).where(eq(transactions.accountId, accountId));
+  }
+
+  async getTransactionsWithCategories(accountId: number): Promise<any[]> {
+    return await db
+        .select({
+          id: transactions.id,
+          accountId: transactions.accountId,
+          categoryId: transactions.categoryId,
+          amount: transactions.amount,
+          type: transactions.type,
+          description: transactions.description,
+          date: transactions.date,
+          category: categories.name,
+        })
+        .from(transactions)
+        .leftJoin(categories, eq(transactions.categoryId, categories.id))
+        .where(eq(transactions.accountId, accountId));
   }
 
   async createTransaction(tx: Omit<Transaction, "id" | "date">): Promise<Transaction> {
