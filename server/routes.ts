@@ -183,5 +183,33 @@ export async function registerRoutes(
     }
   });
 
+  // Analytics endpoints
+  app.get("/api/analytics/spending-by-category", authenticateToken, async (req: any, res) => {
+    try {
+      const data = await storage.getSpendingByCategory(req.user.id);
+      res.json(data);
+    } catch (err) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.get("/api/analytics/monthly-trends", authenticateToken, async (req: any, res) => {
+    try {
+      const data = await storage.getMonthlyTrends(req.user.id);
+      res.json(data);
+    } catch (err) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.get("/api/analytics/budget-vs-actual", authenticateToken, async (req: any, res) => {
+    try {
+      const data = await storage.getBudgetVsActual(req.user.id);
+      res.json(data);
+    } catch (err) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
   return httpServer;
 }

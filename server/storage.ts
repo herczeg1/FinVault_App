@@ -23,6 +23,10 @@ export interface IStorage {
 
   getBudgets(userId: number): Promise<Budget[]>;
   createBudget(budget: Omit<Budget, "id">): Promise<Budget>;
+
+  getSpendingByCategory(userId: number): Promise<{ name: string; total: number }[]>;
+  getMonthlyTrends(userId: number): Promise<{ month: string; income: number; expenses: number }[]>;
+  getBudgetVsActual(userId: number): Promise<{ category: string; budget: number; actual: number }[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -57,8 +61,8 @@ export class DatabaseStorage implements IStorage {
 
   async updateAccountBalance(id: number, amount: number): Promise<void> {
     await db.update(accounts)
-      .set({ balance: sql`${accounts.balance} + ${amount}` })
-      .where(eq(accounts.id, id));
+        .set({ balance: sql`${accounts.balance} + ${amount}` })
+        .where(eq(accounts.id, id));
   }
 
   async getCategories(): Promise<Category[]> {
@@ -86,6 +90,54 @@ export class DatabaseStorage implements IStorage {
   async createBudget(budget: Omit<Budget, "id">): Promise<Budget> {
     const [newBudget] = await db.insert(budgets).values(budget).returning();
     return newBudget;
+  }
+
+  async getSpendingByCategory(userId: number): Promise<{ name: string; total: number }[]> {
+    return await db
+        .select({
+          name: categories.name,
+          total: sql<number>`SUM(${transactions.amount})`,
+        })
+        .from(transactions)
+        .innerJoin(accounts, eq(transactions.accountId, accounts.id))
+        .innerJoin(categories, eq(transactions.categoryId, categories.id))
+        .where(sql`${accounts.userId} = ${userId} AND ${transactions.type} = 'debit'`)
+        .groupBy(categories.id, categories.name);
+  }
+
+  async getMonthlyTrends(userId: number): Promise<{ month: string; income: number; expenses: number }[]> {
+    return await db
+        .select({
+          month: sql<string>`TO_CHAR(${transactions.date}, 'YYYY-MM')`,
+          income: sql<number>`SUM(CASE WHEN ${transactions.type} = 'credit' THEN ${transactions.amount} ELSE 0 END)`,
+          expenses: sql<number>`SUM(CASE WHEN ${transactions.type} = 'debit' THEN ${transactions.amount} ELSE 0 END)`,
+        })
+        .from(transactions)
+        .innerJoin(accounts, eq(transactions.accountId, accounts.id))
+        .where(eq(accounts.userId, userId))
+        .groupBy(sql`TO_CHAR(${transactions.date}, 'YYYY-MM')`)
+        .orderBy(sql`TO_CHAR(${transactions.date}, 'YYYY-MM')`);
+  }
+
+  async getBudgetVsActual(userId: number): Promise<{ category: string; budget: number; actual: number }[]> {
+    return await db
+        .select({
+          category: categories.name,
+          budget: budgets.limitAmount,
+          actual: sql<number>`COALESCE(SUM(${transactions.amount}), 0)`,
+        })
+        .from(budgets)
+        .innerJoin(categories, eq(budgets.categoryId, categories.id))
+        .leftJoin(
+            transactions,
+            sql`${transactions.categoryId} = ${budgets.categoryId}
+          AND ${transactions.type} = 'debit'
+          AND ${transactions.accountId} IN (
+            SELECT id FROM accounts WHERE user_id = ${userId}
+          )`
+        )
+        .where(eq(budgets.userId, userId))
+        .groupBy(budgets.id, categories.name, budgets.limitAmount);
   }
 }
 
