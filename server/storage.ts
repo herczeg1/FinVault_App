@@ -14,6 +14,7 @@ export interface IStorage {
   getAccount(id: number): Promise<Account | undefined>;
   createAccount(account: Omit<Account, "id">): Promise<Account>;
   updateAccountBalance(id: number, amount: number): Promise<void>;
+  debitAccountIfSufficient(id: number, amount: number): Promise<boolean>;
 
   getCategories(): Promise<Category[]>;
   getCategory(id: number): Promise<Category | undefined>;
@@ -57,8 +58,17 @@ export class DatabaseStorage implements IStorage {
 
   async updateAccountBalance(id: number, amount: number): Promise<void> {
     await db.update(accounts)
-      .set({ balance: sql`${accounts.balance} + ${amount}` })
-      .where(eq(accounts.id, id));
+        .set({ balance: sql`${accounts.balance} + ${amount}` })
+        .where(eq(accounts.id, id));
+  }
+
+  async debitAccountIfSufficient(id: number, amount: number): Promise<boolean> {
+    const result = await db.update(accounts)
+        .set({ balance: sql`${accounts.balance} - ${amount}` })
+        .where(sql`${accounts.id} = ${id} AND ${accounts.balance} >= ${amount}`)
+        .returning();
+
+    return result.length > 0;
   }
 
   async getCategories(): Promise<Category[]> {

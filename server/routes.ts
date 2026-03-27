@@ -118,6 +118,7 @@ export async function registerRoutes(
   app.post(api.budgets.create.path, authenticateToken, async (req: any, res) => {
     try {
       const input = api.budgets.create.input.parse(req.body);
+
       const budget = await storage.createBudget({
         userId: req.user.id,
         categoryId: input.categoryId,
@@ -133,11 +134,11 @@ export async function registerRoutes(
     }
   });
 
-  // BUGGY: Race condition implementation (Challenge #1)
+// FIXED: Atomic transfer to prevent race condition (Challenge #1)
   app.post(api.transfers.create.path, authenticateToken, async (req: any, res) => {
     try {
       const input = api.transfers.create.input.parse(req.body);
-      
+
       const fromAcct = await storage.getAccount(input.fromAccountId);
       const toAcct = await storage.getAccount(input.toAccountId);
 
@@ -148,19 +149,21 @@ export async function registerRoutes(
         return res.status(404).json({ message: "Target account not found" });
       }
 
-      if (fromAcct.balance < input.amount) {
+      // ✅ Atomic conditional debit — check and subtract in one DB operation
+      const debited = await storage.debitAccountIfSufficient(
+          input.fromAccountId,
+          input.amount
+      );
+
+      if (!debited) {
         return res.status(400).json({ message: "Insufficient funds" });
       }
 
-      // ⚠️ Simulate latency to make race condition reproducible
-      await new Promise(resolve => setTimeout(resolve, 8));
-
-      await storage.updateAccountBalance(input.fromAccountId, -input.amount);
       await storage.updateAccountBalance(input.toAccountId, input.amount);
 
       await storage.createTransaction({
         accountId: input.fromAccountId,
-        categoryId: 1, // Transfer category
+        categoryId: 1,
         amount: input.amount,
         type: "debit",
         description: `Transfer to ${toAcct.name}`
@@ -168,7 +171,7 @@ export async function registerRoutes(
 
       await storage.createTransaction({
         accountId: input.toAccountId,
-        categoryId: 1, // Transfer category
+        categoryId: 1,
         amount: input.amount,
         type: "credit",
         description: `Transfer from ${fromAcct.name}`
