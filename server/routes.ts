@@ -49,6 +49,7 @@ export async function registerRoutes(
       if (err instanceof z.ZodError) {
         return res.status(400).json({ message: err.errors[0].message });
       }
+      console.error("Register error:", err);
       res.status(500).json({ message: "Internal server error" });
     }
   });
@@ -69,6 +70,7 @@ export async function registerRoutes(
       if (err instanceof z.ZodError) {
         return res.status(400).json({ message: err.errors[0].message });
       }
+      console.error("Login error:", err);
       res.status(500).json({ message: "Internal server error" });
     }
   });

@@ -1,5 +1,6 @@
 import { db } from "./db";
 import { users, accounts, categories, transactions, budgets } from "@shared/schema";
+import bcrypt from "bcrypt";
 
 async function seedDatabase() {
   console.log("Seeding database for 10 users...");
@@ -47,7 +48,8 @@ async function seedDatabase() {
     const existing = await db.select().from(users).where(sql`email = ${email}`);
     if (existing.length > 0) continue;
 
-    const [user] = await db.insert(users).values({ email, password: "demo1234" }).returning();
+    const hashedPassword = await bcrypt.hash("demo1234", 10);
+    const [user] = await db.insert(users).values({ email, password: hashedPassword }).returning();
     
     // Create 2-3 accounts per user
     const accs = await db.insert(accounts).values([
