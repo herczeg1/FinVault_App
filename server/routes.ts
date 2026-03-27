@@ -78,23 +78,13 @@ export async function registerRoutes(
     res.json(account);
   });
 
-  // BUGGY: N+1 queries implementation (Challenge #2)
+  // Fixed: N+1 queries implementation (Challenge #2)
   app.get(api.transactions.list.path, authenticateToken, async (req: any, res) => {
     const accountId = Number(req.params.accountId);
     const account = await storage.getAccount(accountId);
     if (!account || account.userId !== req.user.id) return res.status(403).json({ message: "Forbidden" });
 
-    const transactions = await storage.getTransactions(accountId);
-    
-    // 🔥 N+1 Queries: Intentionally fetching category for each transaction individually
-    const enriched = [];
-    for (const txn of transactions) {
-      const category = await storage.getCategory(txn.categoryId);
-      enriched.push({
-        ...txn,
-        category: category?.name || "Unknown"
-      });
-    }
+    const enriched = await storage.getTransactionsWithCategories(accountId);
 
     res.json(enriched);
   });
