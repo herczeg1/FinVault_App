@@ -4,12 +4,17 @@ import { storage } from "./storage";
 import { api } from "@shared/routes";
 import { z } from "zod";
 import jwt from "jsonwebtoken";
+import bcrypt from "bcrypt";
 
 const JWT_SECRET = process.env.SESSION_SECRET || "hackathon_secret";
+const SALT_ROUNDS = 10;
+
+// In-memory token blacklist (swap for a DB table in production)
+const revokedTokens = new Set<string>();
 
 export async function registerRoutes(
-  httpServer: Server,
-  app: Express
+    httpServer: Server,
+    app: Express
 ): Promise<Server> {
   // Middleware to authenticate JWT
   const authenticateToken = (req: any, res: any, next: any) => {
@@ -18,9 +23,15 @@ export async function registerRoutes(
 
     if (token == null) return res.status(401).json({ message: "No token provided" });
 
+    // ✅ Reject revoked tokens
+    if (revokedTokens.has(token)) {
+      return res.status(401).json({ message: "Token has been revoked" });
+    }
+
     jwt.verify(token, JWT_SECRET, (err: any, user: any) => {
       if (err) return res.status(403).json({ message: "Invalid token" });
       req.user = user;
+      req.token = token;
       next();
     });
   };
@@ -33,8 +44,11 @@ export async function registerRoutes(
       if (existingUser) {
         return res.status(400).json({ message: "Email already exists" });
       }
-      
-      const user = await storage.createUser(input);
+
+      // ✅ Hash password before storing
+      const hashedPassword = await bcrypt.hash(input.password, SALT_ROUNDS);
+      const user = await storage.createUser({ ...input, password: hashedPassword });
+
       const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '24h' });
       res.status(201).json({ token, user });
     } catch (err) {
@@ -49,9 +63,10 @@ export async function registerRoutes(
     try {
       const input = api.auth.login.input.parse(req.body);
       const user = await storage.getUserByEmail(input.email);
-      
-      // Basic plain text password check for demo purposes
-      if (!user || user.password !== input.password) {
+
+      // ✅ Compare against hashed password
+      const passwordMatch = user && await bcrypt.compare(input.password, user.password);
+      if (!user || !passwordMatch) {
         return res.status(401).json({ message: "Invalid credentials" });
       }
 
@@ -63,6 +78,12 @@ export async function registerRoutes(
       }
       res.status(500).json({ message: "Internal server error" });
     }
+  });
+
+  // ✅ Logout route — revokes the token server-side
+  app.post("/api/auth/logout", authenticateToken, (req: any, res) => {
+    revokedTokens.add(req.token);
+    res.status(200).json({ message: "Logged out successfully" });
   });
 
   // Protected routes
@@ -85,7 +106,7 @@ export async function registerRoutes(
     if (!account || account.userId !== req.user.id) return res.status(403).json({ message: "Forbidden" });
 
     const transactions = await storage.getTransactions(accountId);
-    
+
     // 🔥 N+1 Queries: Intentionally fetching category for each transaction individually
     const enriched = [];
     for (const txn of transactions) {
@@ -107,7 +128,7 @@ export async function registerRoutes(
   app.get(api.budgets.list.path, authenticateToken, async (req: any, res) => {
     const budgets = await storage.getBudgets(req.user.id);
     const categories = await storage.getCategories();
-    
+
     const enriched = budgets.map(b => ({
       ...b,
       category: categories.find(c => c.id === b.categoryId)?.name
@@ -137,7 +158,7 @@ export async function registerRoutes(
   app.post(api.transfers.create.path, authenticateToken, async (req: any, res) => {
     try {
       const input = api.transfers.create.input.parse(req.body);
-      
+
       const fromAcct = await storage.getAccount(input.fromAccountId);
       const toAcct = await storage.getAccount(input.toAccountId);
 
@@ -160,7 +181,7 @@ export async function registerRoutes(
 
       await storage.createTransaction({
         accountId: input.fromAccountId,
-        categoryId: 1, // Transfer category
+        categoryId: 1,
         amount: input.amount,
         type: "debit",
         description: `Transfer to ${toAcct.name}`
@@ -168,7 +189,7 @@ export async function registerRoutes(
 
       await storage.createTransaction({
         accountId: input.toAccountId,
-        categoryId: 1, // Transfer category
+        categoryId: 1,
         amount: input.amount,
         type: "credit",
         description: `Transfer from ${fromAcct.name}`
