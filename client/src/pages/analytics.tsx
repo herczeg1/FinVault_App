@@ -1,43 +1,117 @@
-import { BarChart3, Construction } from "lucide-react";
-import { Card, CardContent } from "@/components/ui/card";
-import { motion } from "framer-motion";
+import { useQuery } from "@tanstack/react-query";
+import {
+    PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer,
+    BarChart, Bar, XAxis, YAxis, CartesianGrid,
+    LineChart, Line
+} from "recharts";
+
+const token = localStorage.getItem("token");
+
+const fetchWithAuth = async (url: string) => {
+    const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new Error("Failed to fetch");
+    return res.json();
+};
+
+const FALLBACK_COLORS = ["#6366f1", "#22c55e", "#f59e0b", "#ef4444", "#3b82f6", "#a855f7"];
 
 export default function Analytics() {
-  return (
-    <div className="h-full flex flex-col items-center justify-center p-8 text-center space-y-6">
-      <motion.div
-        initial={{ scale: 0.8, opacity: 0 }}
-        animate={{ scale: 1, opacity: 1 }}
-        transition={{ duration: 0.5, type: "spring" }}
-      >
-        <div className="relative">
-          <div className="w-24 h-24 bg-primary/10 rounded-full flex items-center justify-center border-4 border-primary/20 shadow-xl">
-            <BarChart3 className="w-12 h-12 text-primary" />
-          </div>
-          <div className="absolute -bottom-2 -right-2 w-8 h-8 bg-background rounded-full flex items-center justify-center border border-border shadow-sm">
-            <Construction className="w-4 h-4 text-amber-500" />
-          </div>
-        </div>
-      </motion.div>
-      
-      <div className="space-y-2 max-w-md">
-        <h1 className="text-4xl font-bold tracking-tight text-foreground">Analytics</h1>
-        <p className="text-xl font-medium text-primary mt-2">Coming Soon - Hackathon Challenge #1</p>
-        <p className="text-muted-foreground">
-          This module is reserved for building advanced charts and spending breakdowns. Implement D3 or Recharts here to visualize user flow.
-        </p>
-      </div>
+    const { data: categoryData, isLoading: loadingCategory, isError: errorCategory } =
+        useQuery({ queryKey: ["spending-by-category"], queryFn: () => fetchWithAuth("/api/analytics/spending-by-category") });
 
-      <Card className="w-full max-w-lg mt-8 border-dashed bg-muted/30">
-        <CardContent className="p-6">
-          <h3 className="font-semibold mb-2">Challenge Goals:</h3>
-          <ul className="text-sm text-muted-foreground text-left space-y-2 list-disc list-inside">
-            <li>Aggregate transactions by category across all accounts</li>
-            <li>Render a beautiful Donut chart showing spending allocation</li>
-            <li>Create a monthly line chart comparing Income vs Expenses</li>
-          </ul>
-        </CardContent>
-      </Card>
-    </div>
-  );
+    const { data: trendsData, isLoading: loadingTrends, isError: errorTrends } =
+        useQuery({ queryKey: ["monthly-trends"], queryFn: () => fetchWithAuth("/api/analytics/monthly-trends") });
+
+    const { data: budgetData, isLoading: loadingBudget, isError: errorBudget } =
+        useQuery({ queryKey: ["budget-vs-actual"], queryFn: () => fetchWithAuth("/api/analytics/budget-vs-actual") });
+
+    return (
+        <div className="p-6 space-y-10">
+            <h1 className="text-2xl font-bold">Analytics</h1>
+
+            {/* Spending by Category */}
+            <section>
+                <h2 className="text-lg font-semibold mb-4">Spending by Category</h2>
+                {loadingCategory && <p className="text-muted-foreground">Loading...</p>}
+                {errorCategory && <p className="text-red-500">Failed to load category data.</p>}
+                {categoryData && categoryData.length > 0 && (
+                    <ResponsiveContainer width="100%" height={300}>
+                        <PieChart>
+                            <Pie
+                                data={categoryData}
+                                dataKey="total"
+                                nameKey="name"
+                                cx="50%"
+                                cy="50%"
+                                innerRadius={70}
+                                outerRadius={120}
+                                paddingAngle={3}
+                                label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                            >
+                                {categoryData.map((entry: any, index: number) => (
+                                    <Cell
+                                        key={entry.name}
+                                        fill={FALLBACK_COLORS[index % FALLBACK_COLORS.length]}
+                                    />
+                                ))}
+                            </Pie>
+                            <Tooltip formatter={(value: number) => `$${value.toFixed(2)}`} />
+                            <Legend />
+                        </PieChart>
+                    </ResponsiveContainer>
+                )}
+                {categoryData && categoryData.length === 0 && (
+                    <p className="text-muted-foreground">No spending data yet.</p>
+                )}
+            </section>
+
+            {/* Monthly Trends */}
+            <section>
+                <h2 className="text-lg font-semibold mb-4">Monthly Trends</h2>
+                {loadingTrends && <p className="text-muted-foreground">Loading...</p>}
+                {errorTrends && <p className="text-red-500">Failed to load trends data.</p>}
+                {trendsData && trendsData.length > 0 && (
+                    <ResponsiveContainer width="100%" height={300}>
+                        <LineChart data={trendsData}>
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis dataKey="month" />
+                            <YAxis />
+                            <Tooltip formatter={(value: number) => `$${value.toFixed(2)}`} />
+                            <Legend />
+                            <Line type="monotone" dataKey="income" stroke="#22c55e" strokeWidth={2} dot={false} />
+                            <Line type="monotone" dataKey="expenses" stroke="#ef4444" strokeWidth={2} dot={false} />
+                        </LineChart>
+                    </ResponsiveContainer>
+                )}
+                {trendsData && trendsData.length === 0 && (
+                    <p className="text-muted-foreground">No trends data yet.</p>
+                )}
+            </section>
+
+            {/* Budget vs Actual */}
+            <section>
+                <h2 className="text-lg font-semibold mb-4">Budget vs Actual</h2>
+                {loadingBudget && <p className="text-muted-foreground">Loading...</p>}
+                {errorBudget && <p className="text-red-500">Failed to load budget data.</p>}
+                {budgetData && budgetData.length > 0 && (
+                    <ResponsiveContainer width="100%" height={300}>
+                        <BarChart data={budgetData}>
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis dataKey="category" />
+                            <YAxis />
+                            <Tooltip formatter={(value: number) => `$${value.toFixed(2)}`} />
+                            <Legend />
+                            <Bar dataKey="budget" fill="#6366f1" radius={[4, 4, 0, 0]} />
+                            <Bar dataKey="actual" fill="#f59e0b" radius={[4, 4, 0, 0]} />
+                        </BarChart>
+                    </ResponsiveContainer>
+                )}
+                {budgetData && budgetData.length === 0 && (
+                    <p className="text-muted-foreground">No budget data yet.</p>
+                )}
+            </section>
+        </div>
+    );
 }

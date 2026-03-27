@@ -4,23 +4,30 @@ import { storage } from "./storage";
 import { api } from "@shared/routes";
 import { z } from "zod";
 import jwt from "jsonwebtoken";
+import bcrypt from "bcrypt";
 
 const JWT_SECRET = process.env.SESSION_SECRET || "hackathon_secret";
+const SALT_ROUNDS = 10;
+const revokedTokens = new Set<string>();
 
 export async function registerRoutes(
-  httpServer: Server,
-  app: Express
+    httpServer: Server,
+    app: Express
 ): Promise<Server> {
-  // Middleware to authenticate JWT
   const authenticateToken = (req: any, res: any, next: any) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
 
     if (token == null) return res.status(401).json({ message: "No token provided" });
 
+    if (revokedTokens.has(token)) {
+      return res.status(401).json({ message: "Token has been revoked" });
+    }
+
     jwt.verify(token, JWT_SECRET, (err: any, user: any) => {
       if (err) return res.status(403).json({ message: "Invalid token" });
       req.user = user;
+      req.token = token;
       next();
     });
   };
@@ -33,14 +40,16 @@ export async function registerRoutes(
       if (existingUser) {
         return res.status(400).json({ message: "Email already exists" });
       }
-      
-      const user = await storage.createUser(input);
+
+      const hashedPassword = await bcrypt.hash(input.password, SALT_ROUNDS);
+      const user = await storage.createUser({ ...input, password: hashedPassword });
       const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '24h' });
       res.status(201).json({ token, user });
     } catch (err) {
       if (err instanceof z.ZodError) {
         return res.status(400).json({ message: err.errors[0].message });
       }
+      console.error("Register error:", err);
       res.status(500).json({ message: "Internal server error" });
     }
   });
@@ -49,9 +58,9 @@ export async function registerRoutes(
     try {
       const input = api.auth.login.input.parse(req.body);
       const user = await storage.getUserByEmail(input.email);
-      
-      // Basic plain text password check for demo purposes
-      if (!user || user.password !== input.password) {
+
+      const passwordMatch = user && await bcrypt.compare(input.password, user.password);
+      if (!user || !passwordMatch) {
         return res.status(401).json({ message: "Invalid credentials" });
       }
 
@@ -61,8 +70,14 @@ export async function registerRoutes(
       if (err instanceof z.ZodError) {
         return res.status(400).json({ message: err.errors[0].message });
       }
+      console.error("Login error:", err);
       res.status(500).json({ message: "Internal server error" });
     }
+  });
+
+  app.post("/api/auth/logout", authenticateToken, (req: any, res) => {
+    revokedTokens.add(req.token);
+    res.status(200).json({ message: "Logged out successfully" });
   });
 
   // Protected routes
@@ -78,24 +93,13 @@ export async function registerRoutes(
     res.json(account);
   });
 
-  // BUGGY: N+1 queries implementation (Challenge #2)
+  // FIXED: N+1 queries (Bug 2)
   app.get(api.transactions.list.path, authenticateToken, async (req: any, res) => {
     const accountId = Number(req.params.accountId);
     const account = await storage.getAccount(accountId);
     if (!account || account.userId !== req.user.id) return res.status(403).json({ message: "Forbidden" });
 
-    const transactions = await storage.getTransactions(accountId);
-    
-    // 🔥 N+1 Queries: Intentionally fetching category for each transaction individually
-    const enriched = [];
-    for (const txn of transactions) {
-      const category = await storage.getCategory(txn.categoryId);
-      enriched.push({
-        ...txn,
-        category: category?.name || "Unknown"
-      });
-    }
-
+    const enriched = await storage.getTransactionsWithCategories(accountId);
     res.json(enriched);
   });
 
@@ -107,7 +111,7 @@ export async function registerRoutes(
   app.get(api.budgets.list.path, authenticateToken, async (req: any, res) => {
     const budgets = await storage.getBudgets(req.user.id);
     const categories = await storage.getCategories();
-    
+
     const enriched = budgets.map(b => ({
       ...b,
       category: categories.find(c => c.id === b.categoryId)?.name
@@ -133,11 +137,11 @@ export async function registerRoutes(
     }
   });
 
-  // BUGGY: Race condition implementation (Challenge #1)
+  // FIXED: Race condition (Bug 1)
   app.post(api.transfers.create.path, authenticateToken, async (req: any, res) => {
     try {
       const input = api.transfers.create.input.parse(req.body);
-      
+
       const fromAcct = await storage.getAccount(input.fromAccountId);
       const toAcct = await storage.getAccount(input.toAccountId);
 
@@ -148,19 +152,20 @@ export async function registerRoutes(
         return res.status(404).json({ message: "Target account not found" });
       }
 
-      if (fromAcct.balance < input.amount) {
+      const debited = await storage.debitAccountIfSufficient(
+          input.fromAccountId,
+          input.amount
+      );
+
+      if (!debited) {
         return res.status(400).json({ message: "Insufficient funds" });
       }
 
-      // ⚠️ Simulate latency to make race condition reproducible
-      await new Promise(resolve => setTimeout(resolve, 8));
-
-      await storage.updateAccountBalance(input.fromAccountId, -input.amount);
       await storage.updateAccountBalance(input.toAccountId, input.amount);
 
       await storage.createTransaction({
         accountId: input.fromAccountId,
-        categoryId: 1, // Transfer category
+        categoryId: 1,
         amount: input.amount,
         type: "debit",
         description: `Transfer to ${toAcct.name}`
@@ -168,7 +173,7 @@ export async function registerRoutes(
 
       await storage.createTransaction({
         accountId: input.toAccountId,
-        categoryId: 1, // Transfer category
+        categoryId: 1,
         amount: input.amount,
         type: "credit",
         description: `Transfer from ${fromAcct.name}`
@@ -179,6 +184,115 @@ export async function registerRoutes(
       if (err instanceof z.ZodError) {
         return res.status(400).json({ message: err.errors[0].message });
       }
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Analytics endpoints (Feature 1)
+  app.get("/api/analytics/spending-by-category", authenticateToken, async (req: any, res) => {
+    try {
+      const data = await storage.getSpendingByCategory(req.user.id);
+      res.json(data);
+    } catch (err) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.get("/api/analytics/monthly-trends", authenticateToken, async (req: any, res) => {
+    try {
+      const data = await storage.getMonthlyTrends(req.user.id);
+      res.json(data);
+    } catch (err) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.get("/api/analytics/budget-vs-actual", authenticateToken, async (req: any, res) => {
+    try {
+      const data = await storage.getBudgetVsActual(req.user.id);
+      res.json(data);
+    } catch (err) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Savings Goals endpoints (Feature 2)
+  app.get("/api/savings/goals", authenticateToken, async (req: any, res) => {
+    try {
+      const goals = await storage.getSavingsGoals(req.user.id);
+      res.json(goals);
+    } catch (err) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.post("/api/savings/goals", authenticateToken, async (req: any, res) => {
+    try {
+      const { name, targetAmount, deadline } = req.body;
+      if (!name || !targetAmount) {
+        return res.status(400).json({ message: "name and targetAmount are required" });
+      }
+      const goal = await storage.createSavingsGoal({
+        userId: req.user.id,
+        name,
+        targetAmount,
+        deadline: deadline ? new Date(deadline) : null,
+      });
+      res.status(201).json(goal);
+    } catch (err) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.put("/api/savings/goals/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const goal = await storage.getSavingsGoal(Number(req.params.id));
+      if (!goal) return res.status(404).json({ message: "Goal not found" });
+      if (goal.userId !== req.user.id) return res.status(403).json({ message: "Forbidden" });
+
+      const { name, targetAmount, deadline } = req.body;
+      const updated = await storage.updateSavingsGoal(goal.id, {
+        ...(name && { name }),
+        ...(targetAmount && { targetAmount }),
+        ...(deadline !== undefined && { deadline: deadline ? new Date(deadline) : null }),
+      });
+      res.json(updated);
+    } catch (err) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.delete("/api/savings/goals/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const goal = await storage.getSavingsGoal(Number(req.params.id));
+      if (!goal) return res.status(404).json({ message: "Goal not found" });
+      if (goal.userId !== req.user.id) return res.status(403).json({ message: "Forbidden" });
+
+      await storage.deleteSavingsGoal(goal.id);
+      res.status(200).json({ message: "Goal deleted" });
+    } catch (err) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.post("/api/savings/goals/:id/contributions", authenticateToken, async (req: any, res) => {
+    try {
+      const goal = await storage.getSavingsGoal(Number(req.params.id));
+      if (!goal) return res.status(404).json({ message: "Goal not found" });
+      if (goal.userId !== req.user.id) return res.status(403).json({ message: "Forbidden" });
+
+      const { amount, note } = req.body;
+      if (!amount || isNaN(Number(amount)) || Number(amount) <= 0) {
+        return res.status(400).json({ message: "Valid amount is required" });
+      }
+
+      const contribution = await storage.addContribution({
+        goalId: goal.id,
+        amount,
+        note: note || null,
+      });
+      res.status(201).json(contribution);
+    } catch (err) {
       res.status(500).json({ message: "Internal server error" });
     }
   });
